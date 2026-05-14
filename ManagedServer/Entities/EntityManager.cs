@@ -20,9 +20,8 @@ public class EntityManager(EventNode<IServerEvent> baseEventNode, int viewDistan
 
     private readonly Dictionary<Vec2<int>, List<Entity>> _entitiesByChunk = [];
     private readonly Dictionary<int, Entity> _entitiesById = [];
-    
-    private int _currentId;
-    public int NewNetId => _currentId++;
+
+    public int NewNetId => field++;
 
     public int EntityCount => _entitiesById.Count;
 
@@ -43,7 +42,7 @@ public class EntityManager(EventNode<IServerEvent> baseEventNode, int viewDistan
         _entitiesById[entity.NetId] = entity;
 
         MinecraftPacket[] spawnPackets = entity.GenerateSpawnEntityPackets();
-        foreach (PlayerEntity viewer in GetViewersOf(entity)) {
+        foreach (Player viewer in GetViewersOf(entity)) {
             viewer.SendPackets(spawnPackets);
             AddViewedEntity(viewer, entity.NetId);
         }
@@ -65,7 +64,7 @@ public class EntityManager(EventNode<IServerEvent> baseEventNode, int viewDistan
     }
 
     public void RefreshViewers(Entity entity) {
-        foreach (PlayerEntity player in GetViewersOf(entity, true)) {
+        foreach (Player player in GetViewersOf(entity, true)) {
             if (entity.ViewableRule(player)) {
                 if (player.GetTagOrDefault(VisibleEntitiesTag, []).Contains(entity.NetId)) {
                     continue;  // already visible
@@ -80,7 +79,7 @@ public class EntityManager(EventNode<IServerEvent> baseEventNode, int viewDistan
         }
     }
     
-    public void RefreshPlayerVisibleEntities(PlayerEntity player) {
+    public void RefreshPlayerVisibleEntities(Player player) {
         HashSet<int> visibleEntities = player.GetTagOrDefault(VisibleEntitiesTag, []);
         
         foreach (Entity entity in GetNearbyEntities(player.Position, viewDistanceBlocks)) {
@@ -127,19 +126,24 @@ public class EntityManager(EventNode<IServerEvent> baseEventNode, int viewDistan
             return;
         }
         
-        // Inform viewers of the chunk change
-        foreach (PlayerEntity player in entity.World.GetViewersOf(toChunk)) {
-            if (player == entity) {
-                continue;  // Don't send to self
-            }
-            
-            if (entity.World.DoesPlayerHaveChunkLoaded(player, fromChunk)) {
-                continue;  // they could already see it
-            }
+        // Inform viewers of the chunk change. We schedule on the next tick because
+        // entity.Position is set by Entity.Move *after* this method returns, and the
+        // spawn packet needs the new position. On next tick we build the packets
+        // (cheap) on the tick thread, then hand the socket write to the pool so the
+        // tick itself doesn't block on serialisation/network I/O.
+        foreach (Player player in entity.World.GetViewersOf(toChunk)) {
+            if (player == entity) continue;
+            if (entity.World.DoesPlayerHaveChunkLoaded(player, fromChunk)) continue;
 
-            // do it next tick so that the position is updated
+            Player capturedPlayer = player;
             entity.Server.Scheduler.ScheduleNextTick(() => {
-                SendSpawnPackets(entity, player);
+                if (!entity.ViewableRule(capturedPlayer)) return;
+                MinecraftPacket[] packets = entity.GenerateSpawnEntityPackets();
+                AddViewedEntity(capturedPlayer, entity.NetId);
+                _ = Task.Run(() => {
+                    try { capturedPlayer.SendPackets(packets); }
+                    catch { /* player may have disconnected mid-send */ }
+                });
             });
         }
     }
@@ -163,29 +167,29 @@ public class EntityManager(EventNode<IServerEvent> baseEventNode, int viewDistan
         return _entitiesById.Values.ToArray();
     }
 
-    public PlayerEntity? GetPlayerByConnection(PlayerConnection connection) {
+    public Player? GetPlayerByConnection(PlayerConnection connection) {
         return _entitiesById.Values
-            .Where(e => e is PlayerEntity pe && pe.Connection == connection)
-            .Cast<PlayerEntity>()
+            .Where(e => e is Player pe && pe.Connection == connection)
+            .Cast<Player>()
             .FirstOrDefault();
     }
 
     // this could use some optimising
-    public PlayerEntity[] GetViewersOf(Entity entity, bool ignoreViewableRule = false) {
+    public Player[] GetViewersOf(Entity entity, bool ignoreViewableRule = false) {
         return GetNearbyEntities(entity.Position, viewDistanceBlocks)
             .Where(e => 
-                e is PlayerEntity pe &&  // Only find players nearby
+                e is Player pe &&  // Only find players nearby
                 (ignoreViewableRule || entity.ViewableRule(pe)) &&  // They can view the entity
                 pe != entity)  // Don't include the entity itself if it's a player
-            .Select(e => (PlayerEntity)e)
+            .Select(e => (Player)e)
             .ToArray();
     }
 
     // this is very slow for large numbers of entities
-    public PlayerEntity[] GetPlayers() {
+    public Player[] GetPlayers() {
         return _entitiesById.Values
-            .Where(e => e is PlayerEntity)
-            .Cast<PlayerEntity>()
+            .Where(e => e is Player)
+            .Cast<Player>()
             .ToArray();
     }
     
@@ -265,7 +269,7 @@ public class EntityManager(EventNode<IServerEvent> baseEventNode, int viewDistan
         SendPacketsToViewers(entity, packet, HeadRotPacket(entity.NetId, yaw));
     }
 
-    public void SendSpawnPackets(Entity entity, PlayerEntity player) {
+    public void SendSpawnPackets(Entity entity, Player player) {
         if (!entity.ViewableRule(player)) {
             return;
         }
@@ -273,7 +277,7 @@ public class EntityManager(EventNode<IServerEvent> baseEventNode, int viewDistan
         AddViewedEntity(player, entity.NetId);
     }
 
-    public void SendDespawnPackets(Entity entity, PlayerEntity player) {
+    public void SendDespawnPackets(Entity entity, Player player) {
         player.SendPackets(new ClientBoundRemoveEntitiesPacket {
             Entities = [entity.NetId]
         });
@@ -297,7 +301,7 @@ public class EntityManager(EventNode<IServerEvent> baseEventNode, int viewDistan
         };
     }
     
-    private static void AddViewedEntity(PlayerEntity player, int entityId) {
+    private static void AddViewedEntity(Player player, int entityId) {
         if (!player.HasTag(VisibleEntitiesTag)) {
             player.SetTag(VisibleEntitiesTag, []);
         }
@@ -305,7 +309,7 @@ public class EntityManager(EventNode<IServerEvent> baseEventNode, int viewDistan
         player.GetTag(VisibleEntitiesTag).Add(entityId);
     }
     
-    private static void RemoveViewedEntity(PlayerEntity player, int entityId) {
+    private static void RemoveViewedEntity(Player player, int entityId) {
         if (!player.HasTag(VisibleEntitiesTag)) {
             return;
         }

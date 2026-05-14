@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
 using ManagedServer.Commands;
+using Minecraft.Implementations.Events;
 using ManagedServer.Entities.Types;
 using ManagedServer.Events;
 using ManagedServer.Events.Attributes;
@@ -20,19 +21,20 @@ using Minecraft.Implementations.Server.Features;
 using Minecraft.Implementations.Server.Terrain;
 using Minecraft.Packets;
 using Minecraft.Registry;
+using Minecraft.Schemas;
 
 namespace ManagedServer;
 
 // TODO: Remove MinecraftServer inheritance
 public partial class ManagedMinecraftServer : MinecraftServer, IViewable, IAudience, IFeatureScope {
     public List<World> Worlds { get; } = [];
-    public List<PlayerEntity> Players { get; } = [];
+    public List<Player> Players { get; } = [];
     public ManagedMinecraftServer Server => this;
     public FeatureHandler FeatureHandler { get; }
     public ServerScheduler Scheduler { get; }
     public ulong CurrentTick { get; private set; }
     public string ServerId { get; set; } = Random.Shared.Next(int.MaxValue).ToString();  // must be <=20 chars
-    public Func<PlayerEntity, IPermissionContainer> PermissionsProvider { get; set; } = _ => new MapPermissionContainer();
+    public Func<Player, IPermissionContainer> PermissionsProvider { get; set; } = _ => new MapPermissionContainer();
     
     /// <summary>
     /// Lists of steps that must be completed before a player can log in.
@@ -55,13 +57,21 @@ public partial class ManagedMinecraftServer : MinecraftServer, IViewable, IAudie
     public int WorldTickDelayMs { get; set; } = 50;
     public bool AllowListeningToUnCalledEvents { get; set; } = false;
     public int TargetTicksPerSecond { get; set; } = 20;
-    public Dictionary<string, Dimension> Dimensions { get; } = new() {
-        { "minecraft:overworld", new Dimension() },
-        { "minecraft:dummy_world", new Dimension() }  // Dummy world for respawning players
-    };
+    
     public MinecraftRegistry Registry { get; set; } = VanillaRegistry.Data;
     public Action<string> LogAction { get; set; } = Console.WriteLine;
+    public bool AlwaysLogSlowEvents { get; set; } = false;
     public event Action? ServerStopped;
+
+    /// <summary>
+    /// When a tick exceeds its target duration, the <em>next</em> tick is profiled: any event
+    /// listener that takes at least this many milliseconds is logged with its class and method name.
+    /// Set to 0 to disable auto-profiling. Defaults to 10ms.
+    /// </summary>
+    public int SlowListenerThresholdMs {
+        get => EventProfiler.ThresholdMs;
+        set => EventProfiler.ThresholdMs = value;
+    }
     
     private TimeSpan TargetTickTime => TimeSpan.FromSeconds(1.0 / TargetTicksPerSecond);
 
@@ -173,30 +183,41 @@ public partial class ManagedMinecraftServer : MinecraftServer, IViewable, IAudie
     private void Ticker() {
         Stopwatch tickTimer = new();
         TimeSpan lastTickTime = TimeSpan.Zero;
+        bool profileNextTick = AlwaysLogSlowEvents;
+
         while (!_cts.IsCancellationRequested) {
             tickTimer.Restart();
+
+            // When the previous tick was slow, enable per-listener profiling for this tick.
+            if (profileNextTick && SlowListenerThresholdMs > 0) {
+                EventProfiler.Logger = msg => LogAction($"  {msg}");
+            }
+
             ServerTickEvent tickEvent = new() {
                 Delta = lastTickTime,
                 TargetDelta = TargetTickTime,
                 Server = this
             };
             Exception? exception = Events.CallEventCatchErrors(tickEvent);
-            if (exception != null) {
-                HandleError(exception);
+            if (exception != null) HandleError(exception);
+
+            // Always clear the profiler after the tick — it's only active for one tick at a time.
+            if (!AlwaysLogSlowEvents) {
+                EventProfiler.Logger = null;
+                profileNextTick = false;
             }
+
             TimeSpan tickTime = tickTimer.Elapsed;
             lastTickTime = tickTime;
-            
+
             if (tickTime < TargetTickTime) {
-                // Sleep for the remaining time to maintain the target tick rate
                 Thread.Sleep(TargetTickTime - tickTime);
+            } else {
+                LogAction($"WARNING: Tick took {tickTime.TotalMilliseconds:F1}ms, " +
+                          $"exceeding target of {TargetTickTime.TotalMilliseconds:F1}ms.");
+                profileNextTick = true;
             }
-            else {
-                // If we took too long, log a warning
-                LogAction($"WARNING: Tick took {tickTime.TotalMilliseconds}ms, " + 
-                          $"exceeding target of {TargetTickTime.TotalMilliseconds}ms.");
-            }
-            
+
             CurrentTick++;
         }
     }
@@ -210,11 +231,21 @@ public partial class ManagedMinecraftServer : MinecraftServer, IViewable, IAudie
         LogAction(exception.ToString());
     }
 
-    public World CreateWorld(ITerrainProvider provider, string dimension = "minecraft:overworld", ILightingProvider? lightingProvider = null) {
-        if (!Dimensions.ContainsKey(dimension)) {
-            throw new ArgumentException($"Dimension '{dimension}' does not exist. Please add it to the Dimensions dictionary.");
+    /// <summary>
+    /// Create a world with the given parameters.
+    /// </summary>
+    /// <param name="provider">The provider for the terrain generation.</param>
+    /// <param name="dimension">The dimension ID from <see cref="Dimensions"/>.</param>
+    /// <param name="lightingProvider">The lighting provider.</param>
+    /// <returns>The newly created world.</returns>
+    /// <exception cref="ArgumentException">The dimension is not present in <see cref="Dimensions"/>.</exception>
+    public World CreateWorld(ITerrainProvider provider, Identifier? dimension = null, ILightingProvider? lightingProvider = null) {
+        dimension ??= "minecraft:overworld";
+        
+        if (!Registry.DimensionTypes.Contains(dimension.Value)) {
+            throw new ArgumentException($"Dimension '{dimension}' does not exist. Please add it to the Dimensions registry.");
         }
-        World world = new(this, Events, provider, dimension, lightingProvider, ViewDistance, 
+        World world = new(this, Events, provider, dimension.Value, lightingProvider, ViewDistance, 
             WorldPacketsPerTick, WorldTickDelayMs) {
             Server = this
         };
@@ -230,12 +261,12 @@ public partial class ManagedMinecraftServer : MinecraftServer, IViewable, IAudie
         return listener.Listen(port);
     }
 
-    public PlayerEntity[] GetViewers() {
+    public Player[] GetViewers() {
         return Players.ToArray();
     }
 
     public void SendPacket(MinecraftPacket packet) {
-        foreach (PlayerEntity player in Players) {
+        foreach (Player player in Players) {
             player.SendPacket(packet);
         }
     }

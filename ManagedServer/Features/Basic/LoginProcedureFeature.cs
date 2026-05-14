@@ -3,7 +3,6 @@ using ManagedServer.Events;
 using ManagedServer.Events.Attributes;
 using ManagedServer.Login;
 using Minecraft;
-using Minecraft.Data.Generated;
 using Minecraft.Implementations.Server.Events;
 using Minecraft.Implementations.Server.Features;
 using Minecraft.Implementations.Tags;
@@ -13,7 +12,6 @@ using Minecraft.Packets.Config.ServerBound;
 using Minecraft.Packets.Login.ClientBound;
 using Minecraft.Packets.Login.ServerBound;
 using Minecraft.Packets.Play.ClientBound;
-using Minecraft.Registry;
 using Minecraft.Registry.Templates;
 using Minecraft.Schemas;
 using NBT;
@@ -159,20 +157,11 @@ public class LoginProcedureFeature(bool encryption = true, bool requestAuthentic
                         continue;
                     }
                     
-                    registryPackets.Add(new ClientBoundRegistryDataPacket {
-                        RegistryId = nbtReg.RegistryId,
-                        Entries = nbtReg.ToNbt()!
-                    });
+                    registryPackets.Add(new ClientBoundRegistryDataPacket(nbtReg));
                 }
                 e.Connection.SendPackets(registryPackets);
             
                 e.Connection.SendPackets(
-                    new ClientBoundRegistryDataPacket {
-                        RegistryId = "minecraft:dimension_type",
-                        Entries = new Dictionary<string, INbtTag?>(
-                            Scope.Server.Dimensions
-                                .Select(kvp => new KeyValuePair<string, INbtTag?>(kvp.Key, kvp.Value.ToNbt())))
-                    },
                     new ClientBoundRegistryDataPacket {
                         RegistryId = "minecraft:zombie_nautilus_variant",
                         Entries = new Dictionary<string, INbtTag?> {
@@ -204,12 +193,6 @@ public class LoginProcedureFeature(bool encryption = true, bool requestAuthentic
                         }
                     },
                     new ClientBoundRegistryDataPacket {
-                        RegistryId = "minecraft:painting_variant",
-                        Entries = new Dictionary<string, INbtTag?> {
-                            { "minecraft:alban", null }
-                        }
-                    },
-                    new ClientBoundRegistryDataPacket {
                         RegistryId = "minecraft:pig_variant",
                         Entries = new Dictionary<string, INbtTag?> {
                             { "minecraft:warm", null }
@@ -225,59 +208,6 @@ public class LoginProcedureFeature(bool encryption = true, bool requestAuthentic
                         RegistryId = "minecraft:wolf_variant",
                         Entries = new Dictionary<string, INbtTag?> {
                             { "minecraft:ashen", null }
-                        }
-                    },
-                    new ClientBoundRegistryDataPacket {
-                        RegistryId = "minecraft:damage_type",
-                        Entries = new Dictionary<string, INbtTag?> {
-                            { "minecraft:arrow", null },
-                            { "minecraft:bad_respawn_point", null },
-                            { "minecraft:cactus", null },
-                            { "minecraft:campfire", null },
-                            { "minecraft:cramming", null },
-                            { "minecraft:dragon_breath", null },
-                            { "minecraft:drown", null },
-                            { "minecraft:dry_out", null },
-                            { "minecraft:explosion", null },
-                            { "minecraft:fall", null },
-                            { "minecraft:falling_anvil", null },
-                            { "minecraft:falling_block", null },
-                            { "minecraft:falling_stalactite", null },
-                            { "minecraft:fireball", null },
-                            { "minecraft:fireworks", null },
-                            { "minecraft:fly_into_wall", null },
-                            { "minecraft:freeze", null },
-                            { "minecraft:generic", null },
-                            { "minecraft:generic_kill", null },
-                            { "minecraft:hot_floor", null },
-                            { "minecraft:in_fire", null },
-                            { "minecraft:in_wall", null },
-                            { "minecraft:indirect_magic", null },
-                            { "minecraft:lava", null },
-                            { "minecraft:lightning_bolt", null },
-                            { "minecraft:magic", null },
-                            { "minecraft:mob_attack", null },
-                            { "minecraft:mob_attack_no_aggro", null },
-                            { "minecraft:mob_projectile", null },
-                            { "minecraft:on_fire", null },
-                            { "minecraft:out_of_world", null },
-                            { "minecraft:outside_border", null },
-                            { "minecraft:player_attack", null },
-                            { "minecraft:player_explosion", null },
-                            { "minecraft:sonic_boom", null },
-                            { "minecraft:spit", null },
-                            { "minecraft:stalagmite", null },
-                            { "minecraft:starve", null },
-                            { "minecraft:sting", null },
-                            { "minecraft:sweet_berry_bush", null },
-                            { "minecraft:thorns", null },
-                            { "minecraft:thrown", null },
-                            { "minecraft:trident", null },
-                            { "minecraft:unattributed_fireball", null },
-                            { "minecraft:wind_charge", null },
-                            { "minecraft:wither", null },
-                            { "minecraft:wither_skull", null },
-                            { "minecraft:ender_pearl", null }
                         }
                     },
                     new ClientBoundRegistryDataPacket {
@@ -314,10 +244,8 @@ public class LoginProcedureFeature(bool encryption = true, bool requestAuthentic
                 
                 ClientBoundLoginPacket packet = new() {
                     DimensionName = preLoginEvent.World.DimensionId,
-                    DimensionType = Scope.Server.Dimensions.Keys.ToList()
-                        .IndexOf(preLoginEvent.World.DimensionId),
-                    Dimensions = Scope.Server.Dimensions.Keys.Select(s => (Identifier)s)
-                        .ToArray(),
+                    DimensionType = Scope.Server.Registry.DimensionTypes.GetProtocolId(preLoginEvent.World.DimensionId),
+                    Dimensions = Scope.Server.Registry.DimensionTypes.Identifiers.ToArray(),
                     DoLimitedCrafting = false,
                     EnableRespawnScreen = true,
                     EnforcesSecureChat = false,
@@ -341,7 +269,7 @@ public class LoginProcedureFeature(bool encryption = true, bool requestAuthentic
                 e.Connection.SendPacket(packet);
                 
                 // create a player object
-                PlayerEntity entity = new(Scope.Server, e.Connection, PlayerInfoFeature.GetInfo(e.Connection).Username!) {
+                Player entity = new(Scope.Server, e.Connection, PlayerInfoFeature.GetInfo(e.Connection).Username!) {
                     NetId = pEntityId,
                     GameMode = preLoginEvent.GameMode,
                     Uuid = preLoginEvent.Uuid,

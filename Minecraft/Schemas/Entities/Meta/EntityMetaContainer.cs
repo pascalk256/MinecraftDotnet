@@ -1,11 +1,11 @@
 using Minecraft.Data.Blocks;
 using Minecraft.Data.Particles;
+using Minecraft.Data.PaintingVariant;
 using Minecraft.Registry;
 using Minecraft.Schemas.Blocks.BlockEnums;
 using Minecraft.Schemas.Items;
 using Minecraft.Schemas.Vec;
 using Minecraft.Text;
-using NBT;
 
 namespace Minecraft.Schemas.Entities.Meta;
 
@@ -52,8 +52,8 @@ public class EntityMetaContainer {
         { MetaFieldType.ZombieNautilusVariant, (_, reader) => new MetaField<int>(MetaFieldType.ZombieNautilusVariant, reader.ReadVarInt()) },
         { MetaFieldType.OptionalGlobalPosition, (_, reader) => new MetaField<Optional<(Identifier, Vec3<int>)>>(MetaFieldType.OptionalGlobalPosition, 
             reader.ReadPrefixedOptional(r => (r.ReadString(), r.ReadPosition()))) },
-        { MetaFieldType.PaintingVariant, (_, reader) => new MetaField<Or<int, PaintingVariant>>(MetaFieldType.PaintingVariant, 
-            reader.ReadIdOr(PaintingVariant.Read)) },
+        { MetaFieldType.PaintingVariant, (reg, reader) => new MetaField<Or<int, IPaintingVariant>>(MetaFieldType.PaintingVariant, 
+            reader.ReadIdOr(r => IPaintingVariant.ReadData(r, reg))) },
         { MetaFieldType.SnifferState, (_, reader) => new MetaField<SnifferState>(MetaFieldType.SnifferState, 
             (SnifferState)reader.ReadVarInt()) },
         { MetaFieldType.ArmadilloState, (_, reader) => new MetaField<ArmadilloState>(MetaFieldType.ArmadilloState,
@@ -91,10 +91,10 @@ public class EntityMetaContainer {
         { MetaFieldType.OptionalBlockState, (_, writer, field) => 
             writer.WritePrefixedOptional(field.GetValue<Optional<IBlock>>(), (block, w) => w.WriteVarInt((int)block.StateId)) },
         { MetaFieldType.Particle, (reg, writer, field) => 
-            writer.WriteVarInt(field.GetValue<IParticle>().ProtocolId).Write(wr => field.GetValue<IParticle>().WriteData(wr, reg)) },
+            writer.WriteVarInt(reg.Particles.GetProtocolId(field.GetValue<IParticle>())).Write(wr => field.GetValue<IParticle>().WriteData(wr, reg)) },
         { MetaFieldType.Particles, (reg, writer, field) => 
             writer.WritePrefixedArray(field.GetValue<IParticle[]>(), (particle, w) => 
-                w.WriteVarInt(particle.ProtocolId).Write(wr => particle.WriteData(wr, reg))) },
+                w.WriteVarInt(reg.Particles.GetProtocolId(particle)).Write(wr => particle.WriteData(wr, reg))) },
         { MetaFieldType.VillagerData, (_, writer, field) => {
             (int type, int profession, int level) = field.GetValue<(int, int, int)>();
             writer.WriteVarInt(type).WriteVarInt(profession).WriteVarInt(level);
@@ -113,8 +113,8 @@ public class EntityMetaContainer {
         { MetaFieldType.OptionalGlobalPosition, (_, writer, field) => 
             writer.WritePrefixedOptional(field.GetValue<Optional<(Identifier, Vec3<int>)>>(), 
                 (tuple, w) => w.WriteString(tuple.Item1).WritePosition(tuple.Item2)) },
-        { MetaFieldType.PaintingVariant, (_, writer, field) => 
-            writer.WriteIdOr(field.GetValue<Or<int, PaintingVariant>>(), (v, w) => v.Write(w)) },
+        { MetaFieldType.PaintingVariant, (reg, writer, field) => 
+            writer.WriteIdOr(field.GetValue<Or<int, IPaintingVariant>>(), (v, w) => v.WriteData(w, reg)) },
         { MetaFieldType.SnifferState, (_, writer, field) => writer.WriteVarInt((int)field.GetValue<SnifferState>()) },
         { MetaFieldType.ArmadilloState, (_, writer, field) => writer.WriteVarInt((int)field.GetValue<ArmadilloState>()) },
         { MetaFieldType.CopperGolemState, (_, writer, field) => writer.WriteVarInt((int)field.GetValue<CopperGolemState>()) },

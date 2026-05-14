@@ -20,27 +20,26 @@ public partial class ManagedMinecraftServer {
         new DropItemsEventFeature(),
         new ConsumablesFeature(),
         new LoginProcedureFeature(),
-        new PhysicsFeature(),
         new SimpleTabListFeature(),
         new PlayerSkinLayersFeature(),
         new UseItemEventFeature(),
         new RightClickToEquipArmourFeature(),
         new CommandsFeature(),
         new InventoryClosingFeature(),
-        new AttributeModifiersFeature(true)
+        new AttributeModifiersFeature(true),
+        new PlayerSwapItemFeature()
     );
 
     public static FeatureBundle BasicsWithMojangAuthBundle => BasicsBundle
             .Replace(new LoginProcedureFeature(true, true))
             .With(new MojangAuthenticationFeature());
 
-    public static ManagedMinecraftServer NewBasic() {
-        return New(BasicsBundle);
-    }
-    
-    public static ManagedMinecraftServer NewBasicWithMojangAuth() {
-        return New(BasicsWithMojangAuthBundle);
-    }
+    /// <summary>
+    /// The basics bundle but with connection encryption disabled because
+    /// velocity does not support it.
+    /// </summary>
+    public static FeatureBundle BasicsWithProxySupport => BasicsBundle
+            .Replace(new LoginProcedureFeature(false));
     
     public static ManagedMinecraftServer New(params FeatureBundle[] bundle) {
         ManagedMinecraftServer server = new();
